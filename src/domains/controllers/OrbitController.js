@@ -29,4 +29,8 @@ export default class OrbitController extends BaseController {
         this.controls.update();
       }
     }
+
+    get(){
+      return this.controls
+    }
   }

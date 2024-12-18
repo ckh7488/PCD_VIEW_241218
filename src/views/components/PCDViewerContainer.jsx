@@ -7,32 +7,52 @@ const PCDViewerContainer = () => {
   const containerRef = useRef(null);
   const viewerRef = useRef(null);
   const [isDragging, setIsDragging] = useState(false);
-  const [loadedFiles, setLoadedFiles] = useState([]); // PCD 파일 목록
+  const [loadedFiles, setLoadedFiles] = useState([]); 
+  const [selectedFileName, setSelectedFileName] = useState(null);
 
-  // 뷰어 로드
   useEffect(() => {
     viewerRef.current = new PCDViewer(containerRef.current);
+    viewerRef.current.onFileSelect((name) => {
+      setSelectedFileName(name);
+    });
+
     return () => viewerRef.current.dispose();
   }, []);
 
-  // PCD 파일 로드 및 추가
   const handleFileLoad = async (fileObj) => {
     const pcd = await readPCDFile(fileObj);
-    viewerRef.current.getEditor().addPCD(pcd.name, pcd);
 
-    setLoadedFiles((prevFiles) => [
-      ...prevFiles,
-      { name: pcd.name, visible: true, pcd: pcd },
-    ]);
-  };
+    // 중복 이름 확인 및 고유 이름 생성
+    let uniqueName = pcd.name;
+    let counter = 1;
 
-  // PCD 표시/숨기기 토글
+    setLoadedFiles((prevFiles) => {
+        const existingNames = prevFiles.map((file) => file.name);
+
+        while (existingNames.includes(uniqueName)) {
+            uniqueName = `${pcd.name} (${++counter})`;
+        }
+
+        // PCD 객체에 고유 이름을 설정
+        pcd.name = uniqueName;
+
+        // Viewer와 상태 업데이트
+        viewerRef.current.getEditor().addPCD(uniqueName, pcd, viewerRef.current);
+
+        return [
+            ...prevFiles,
+            { name: uniqueName, visible: true, pcd: pcd },
+        ];
+    });
+};
+
+
   const toggleVisibility = (fileName) => {
     setLoadedFiles((prevFiles) =>
       prevFiles.map((file) => {
         if (file.name === fileName) {
           const isVisible = !file.visible;
-          file.pcd.getPoints().visible = isVisible;
+          file.pcd.setVisibility(isVisible);
           return { ...file, visible: isVisible };
         }
         return file;
@@ -40,18 +60,21 @@ const PCDViewerContainer = () => {
     );
   };
 
-  // PCD 파일 삭제
   const removeFile = (fileName) => {
     setLoadedFiles((prevFiles) => prevFiles.filter((file) => file.name !== fileName));
     viewerRef.current.getEditor().removePCD(fileName);
+    if (selectedFileName === fileName) {
+      setSelectedFileName(null);
+      viewerRef.current.onPCDDeselected();
+    }
   };
 
-  // 파일 선택 (추가: 원하는 동작 수행)
   const selectFile = (fileName) => {
-    console.log(`Selected file: ${fileName}`);
+    setSelectedFileName(fileName);
+    viewerRef.current.getEditor().selectPCD(fileName);
+    viewerRef.current.onPCDSelected(fileName);
   };
 
-  // 드래그 상태 관리
   const handleDragEnter = (e) => {
     e.preventDefault();
     setIsDragging(true);
@@ -79,21 +102,19 @@ const PCDViewerContainer = () => {
       }}
       onDragEnter={handleDragEnter}
     >
-      {/* Three.js Viewer */}
       <div
         ref={containerRef}
         style={{ flex: 1, backgroundColor: "#000" }}
       />
 
-      {/* 오른쪽 파일 트리 */}
       <PCDFileTree
         files={loadedFiles}
         onToggleVisibility={toggleVisibility}
         onRemoveFile={removeFile}
         onSelectFile={selectFile}
+        selectedFileName={selectedFileName}
       />
 
-      {/* 드래그 앤 드롭 영역 */}
       {isDragging && (
         <div
           onDragLeave={handleDragLeave}
