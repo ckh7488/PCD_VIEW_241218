@@ -1,11 +1,11 @@
 import React from 'react';
 import './App.css';
-import PCDViewerContainer from './views/components/PCDViewerContainer';
+import WebViewer from './views/components/WebViewer';
 
 function App() {
   return (
     <div style={{ height: "100vh", width: "100%" }}>
-      <PCDViewerContainer />
+      <WebViewer />
     </div>
   );
 }
