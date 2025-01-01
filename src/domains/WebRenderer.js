@@ -27,7 +27,7 @@ export class WebRenderer {
       75,
       this.container.clientWidth / this.container.clientHeight,
       0.001,
-      100000
+      10000000
     );
     this.camera.position.set(0, 0, 5);
 

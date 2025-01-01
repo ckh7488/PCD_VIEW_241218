@@ -60,7 +60,7 @@ const WebViewer = () => {
         setRotationAxes([]);
         controllerRef.current.cancelTransformation();
         controllerRef.current.clearSelection();
-        return;
+        
       }
 
       // WebController의 handleKeyDown
