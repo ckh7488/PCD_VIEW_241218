@@ -11,12 +11,10 @@ export class WebRenderer {
     this.renderer = null;
     this.controls = null;
 
-    this.rotatingPCDs = [];
     this.axisHelpers = [];
-    this.intersectableObjects = [];  // Raycast 대상
+    this.intersectableObjects = [];
 
     this.controllerType = "orbit";
-
     this.controller = null;
   }
 
@@ -34,7 +32,10 @@ export class WebRenderer {
     this.camera.position.set(0, 0, 5);
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
-    this.renderer.setSize(this.container.clientWidth, this.container.clientHeight);
+    this.renderer.setSize(
+      this.container.clientWidth,
+      this.container.clientHeight
+    );
     this.container.appendChild(this.renderer.domElement);
 
     this.setController(controllerType);
@@ -51,22 +52,24 @@ export class WebRenderer {
     switch (controllerType) {
       case "trackball":
         this.controls = new TrackballControls(this.camera, this.renderer.domElement);
-        // trackball 기본 설정
         this.controls.rotateSpeed = 1.0;
         break;
       case "orbit":
       default:
         this.controls = new OrbitControls(this.camera, this.renderer.domElement);
-        // damping 끔 → 마찰 없이 사용자가 멈추면 즉시 정지
         this.controls.enableDamping = false;
         break;
     }
   }
 
   onWindowResize() {
-    this.camera.aspect = this.container.clientWidth / this.container.clientHeight;
+    this.camera.aspect =
+      this.container.clientWidth / this.container.clientHeight;
     this.camera.updateProjectionMatrix();
-    this.renderer.setSize(this.container.clientWidth, this.container.clientHeight);
+    this.renderer.setSize(
+      this.container.clientWidth,
+      this.container.clientHeight
+    );
   }
 
   registerObject(name, pcdInstance) {
@@ -82,32 +85,9 @@ export class WebRenderer {
     const obj = this.scene.getObjectByName(name);
     if (obj) {
       this.scene.remove(obj);
-      const pcd = obj.userData.pcdInstance;
-      if (pcd) {
-        this.removeFromRotatingList(pcd);
-      }
     } else {
       console.warn(`Object ${name} not found in scene.`);
     }
-  }
-
-  addToRotatingList(pcd) {
-    if (!this.rotatingPCDs.includes(pcd)) {
-      this.rotatingPCDs.push(pcd);
-    }
-  }
-
-  removeFromRotatingList(pcd) {
-    const idx = this.rotatingPCDs.indexOf(pcd);
-    if (idx >= 0) {
-      this.rotatingPCDs.splice(idx, 1);
-    }
-  }
-
-  updateRotation(deltaTime = 0.016) {
-    this.rotatingPCDs.forEach((pcd) => {
-      pcd.updateRotation(deltaTime);
-    });
   }
 
   showAxis(objs) {
@@ -143,36 +123,48 @@ export class WebRenderer {
     }
   }
 
+  addPCD(name, pcd) {
+    // 여기서 pcd는 PCD class instance
+    const points = pcd.getPoints();
+    points.name = name;
+    points.userData.pcdInstance = pcd; // ← 핵심!
+    this.addObject(points);
+  }
+  
   addObject(threeObj) {
     this.scene.add(threeObj);
     this.intersectableObjects.push(threeObj);
-  }
-
-  addPCD(name, pcdPoints) {
-    pcdPoints.name = name;
-    this.addObject(pcdPoints);
   }
 
   getObjectByName(name) {
     return this.scene.getObjectByName(name);
   }
 
-  /**
-   * visible=false 인 오브젝트는 선택 대상 제외 → Raycast용 헬퍼
-   */
   getVisibleObjects() {
     return this.intersectableObjects.filter((obj) => obj.visible);
   }
 
+  /**
+   * 매 프레임 호출
+   */
   animate() {
     requestAnimationFrame(this.animate.bind(this));
 
-    this.updateRotation();
+    // 모든 Scene 오브젝트를 순회하며, PCD인 경우 applyModifiers + updateRotation
+  this.scene.traverse((child) => {
+    if (child.userData && child.userData.pcdInstance) {
+      const pcd = child.userData.pcdInstance;
+      // (1) 매 프레임 회전각 증가
+      pcd.updateRotation(0.016); 
+      // (2) Modifier(Transformation, Rotation) 누적 적용
+      pcd.applyModifiers();
+    }
+  });
 
+    // 선택 박스헬퍼 업데이트
     if (this.controller) {
       this.controller.updateHighlights();
     }
-
     if (this.controls) {
       this.controls.update();
     }

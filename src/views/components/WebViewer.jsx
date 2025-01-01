@@ -5,24 +5,22 @@ import { readPCDFile } from "../../domains/PCDFileReader";
 import PCDFileTree from "./PCDFileTree";
 import * as THREE from "three";
 
+import TransformationEditor from "./TransformationEditor";
+import RotationEditor from "./RotationEditor";
+
 const WebViewer = () => {
   const containerRef = useRef(null);
   const controllerRef = useRef(null);
-  const [isDragging, setIsDragging] = useState(false);
-  const [loadedFiles, setLoadedFiles] = useState([]);
-  const [rotationAxes, setRotationAxes] = useState([]);
-  const [selectedFiles, setSelectedFiles] = useState([]);
-  const [transformationMode, setTransformationMode] = useState(null);
-  const [showPanels, setShowPanels] = useState(false); // T 키로 토글
-  const dragCounter = useRef(0);
 
-  useEffect(() => {
-    if (selectedFiles.length > 0) {
-      updateRotationAxes(); // 선택된 파일에 대한 축 정보 업데이트
-    } else {
-      setRotationAxes([]); // 선택된 파일이 없을 경우 초기화
-    }
-  }, [selectedFiles]);
+  const [loadedFiles, setLoadedFiles] = useState([]);
+  const [selectedFiles, setSelectedFiles] = useState([]);
+  const [isDragging, setIsDragging] = useState(false);
+  const [modifiers, setModifiers] = useState([]); // 특정 파일에 대한 Modifier들
+  const [rotationAxes, setRotationAxes] = useState([]); // 회전축 UI
+  const dragCounter = useRef(0);
+  
+  const [showPanels, setShowPanels] = useState(false); // T 키로 토글
+  const [transformationMode, setTransformationMode] = useState(null);
 
   useEffect(() => {
     if (containerRef.current) {
@@ -36,21 +34,36 @@ const WebViewer = () => {
     }
   }, []);
 
+  // 선택된 파일이 바뀔 때마다, 회전축/Modifiers UI 갱신
+  useEffect(() => {
+    if (selectedFiles.length > 0) {
+      updateRotationAxes();
+      updateModifiers();
+    } else {
+      setRotationAxes([]);
+      setModifiers([]);
+    }
+  }, [selectedFiles]);
+
   // 키보드
   useEffect(() => {
-
     const handleKeyDown = (event) => {
+      // T => 패널 토글
       if (event.key.toLowerCase() === "t") {
-        setShowPanels((prev) => !prev); // T 키로 토글
+        setShowPanels((prev) => !prev);
       }
       if (!controllerRef.current) return;
+
+      // ESC => 선택 해제 + 변환 취소
       if (event.key.toLowerCase() === "escape") {
-        setSelectedFiles([]); // 선택된 파일 초기화
-        setRotationAxes([]); // 회전 축 데이터 초기화
+        setSelectedFiles([]);
+        setRotationAxes([]);
         controllerRef.current.cancelTransformation();
         controllerRef.current.clearSelection();
         return;
       }
+
+      // WebController의 handleKeyDown
       controllerRef.current.handleKeyDown(event);
       setTransformationMode(controllerRef.current.getTransformationMode());
     };
@@ -60,64 +73,143 @@ const WebViewer = () => {
     };
   }, []);
 
-  // 회전 축 정보 업데이트
-  const updateRotationAxes = () => {
+  /**
+   * Modifiers
+   */
+  const updateModifiers = () => {
     if (!controllerRef.current) return;
+    const controller = controllerRef.current;
 
-    const axes = [];
+    const modifierList = [];
     selectedFiles.forEach((fileName) => {
-      const pcd = controllerRef.current.PCDs.get(fileName);
+      const pcd = controller.PCDs.get(fileName);
       if (pcd) {
-        const pcdAxes = pcd.getRotationAxes();
-        axes.push({ name: fileName, axes: pcdAxes });
+        // 현재 pcd.modifiers 배열을 복사
+        modifierList.push({ name: fileName, modifiers: [...pcd.modifiers] });
       }
     });
-    setRotationAxes(axes);
+    setModifiers(modifierList);
   };
 
-  // 회전 축 추가
-  const handleAddRotationAxis = (fileName) => {
+  const handleAddModifier = (fileName, type) => {
+    if (!controllerRef.current) return;
     const controller = controllerRef.current;
-    if (!controller) return;
 
-    const axisPos = new THREE.Vector3(0, 0, 0); // 기준점
-    const axisDir = new THREE.Vector3(1, 0, 0); // X축 방향
-    const speed = 1.0; // 속도
-
-    controller.addRotationAxisToPCD(fileName, axisPos, axisDir, speed);
-    updateRotationAxes();
+    let modifier = null;
+    if (type === "transformation") {
+      modifier = { transformation: { matrix: new THREE.Matrix4().identity() } };
+    } else if (type === "rotation") {
+      modifier = {
+        rotation: {
+          axisPos: new THREE.Vector3(0, 0, 0),
+          axisDir: new THREE.Vector3(1, 0, 0),
+          speed: 1.0,
+        },
+      };
+    }
+    controller.addModifierToPCD(fileName, modifier);
+    updateModifiers();
   };
 
-  // 회전 속성 변경
-  const handleAxisChange = (fileName, index, field, value) => {
+  const handleRemoveModifier = (fileName, index) => {
+    if (!controllerRef.current) return;
     const controller = controllerRef.current;
-    if (!controller) return;
+    controller.removeModifierFromPCD(fileName, index);
+    updateModifiers();
+  };
 
+  // Modifier 속성 수정
+  const handleModifierChange = (fileName, index, field, value) => {
+    if (!controllerRef.current) return;
+    const controller = controllerRef.current;
     const pcd = controller.PCDs.get(fileName);
     if (!pcd) return;
 
-    const newRotationAxes = [...rotationAxes];
-    const axis = newRotationAxes.find((item) => item.name === fileName).axes[index];
+    const modifier = pcd.modifiers[index];
+    if (modifier.rotation && field in modifier.rotation) {
+      if (field === "speed") {
+        modifier.rotation.speed = parseFloat(value);
+      } else {
+        // axisPos / axisDir => "x,y,z" 문자를 Vector3로
+        const vec = new THREE.Vector3(...value.split(",").map(Number));
+        // axisDir은 normalize()
+        if (field === "axisDir") vec.normalize();
+        modifier.rotation[field] = vec;
+      }
+    } else if (modifier.transformation && field === "matrix") {
+      // 행렬 "1,0,0,0, 0,1,0,0, ..." 같은 문자열을 parse
+      const arr = value.split(",").map(Number);
+      const mat = new THREE.Matrix4().fromArray(arr);
+      modifier.transformation.matrix = mat;
+    }
+    // 재적용 (PCD 내부에서 프레임마다 applyModifiers()가 호출되긴 하지만, 즉시 반영 위해)
+    pcd.applyModifiers();
+    updateModifiers();
+  };
+
+  /**
+   * Rotation Axes (예: 브리징된 rotationData)
+   */
+  const updateRotationAxes = () => {
+    if (!controllerRef.current) return;
+    const controller = controllerRef.current;
+
+    const axesAll = [];
+    selectedFiles.forEach((fileName) => {
+      const pcd = controller.PCDs.get(fileName);
+      if (pcd) {
+        const pcdAxes = pcd.getRotationAxes(); // [{ axisPos, axisDir, speed, __modIndex }, ...]
+        axesAll.push({ name: fileName, axes: pcdAxes });
+      }
+    });
+    setRotationAxes(axesAll);
+  };
+
+  const handleAddRotationAxis = (fileName) => {
+    if (!controllerRef.current) return;
+    const controller = controllerRef.current;
+    // X축 speed=1.0
+    controller.addRotationAxisToPCD(fileName, new THREE.Vector3(0, 0, 0), new THREE.Vector3(1, 0, 0), 1.0);
+    updateRotationAxes();
+  };
+
+  const handleAxisChange = (fileName, index, field, value) => {
+    if (!controllerRef.current) return;
+    const controller = controllerRef.current;
+    const pcd = controller.PCDs.get(fileName);
+    if (!pcd) return;
+
+    // React state 배열 복사
+    const newRotationAxes = JSON.parse(JSON.stringify(rotationAxes));
+    const targetFileAxes = newRotationAxes.find((item) => item.name === fileName);
+    if (!targetFileAxes) return;
+    const axisItem = targetFileAxes.axes[index];
+    if (!axisItem) return;
+
     if (field === "speed") {
-      axis.speed = parseFloat(value);
+      axisItem.speed = parseFloat(value);
     } else if (field === "axisPos" || field === "axisDir") {
-      axis[field] = new THREE.Vector3(...value.split(",").map(Number));
+      const vec = new THREE.Vector3(...value.split(",").map(Number));
+      if (field === "axisDir") vec.normalize();
+      axisItem[field] = vec;
     }
 
-    pcd.updateRotationAxis(index, axis.axisPos, axis.axisDir, axis.speed);
+    // pcd.updateRotationAxis( index, axisPos, axisDir, speed )
+    pcd.updateRotationAxis(index, axisItem.axisPos, axisItem.axisDir, axisItem.speed);
+
     setRotationAxes(newRotationAxes);
   };
 
-  // 회전 축 삭제
   const handleRemoveRotationAxis = (fileName, index) => {
+    if (!controllerRef.current) return;
     const controller = controllerRef.current;
-    if (!controller) return;
-
     controller.removeRotationAxisFromPCD(fileName, index);
     updateRotationAxes();
   };
 
-  // 드래그&드롭
+  /**
+   * 드래그&드롭
+   */
   const handleDragEnter = (event) => {
     event.preventDefault();
     event.stopPropagation();
@@ -146,7 +238,7 @@ const WebViewer = () => {
     dragCounter.current = 0;
 
     const files = Array.from(event.dataTransfer.files);
-    const pcdFiles = files.filter((file) => file.name.toLowerCase().endsWith(".pcd"));
+    const pcdFiles = files.filter((f) => f.name.toLowerCase().endsWith(".pcd"));
 
     for (const file of pcdFiles) {
       try {
@@ -161,15 +253,17 @@ const WebViewer = () => {
   };
 
   /**
-   * 클릭 -> 변환중이면 확정, 아니면 PCD선택
+   * 마우스 클릭
    */
   const handleCanvasClick = (event) => {
     if (!controllerRef.current) return;
     const { appState } = controllerRef.current;
+    // 변환 중이면 적용
     if (appState === "TRANSFORM") {
       controllerRef.current.applyTransformation();
       setTransformationMode(null);
     } else {
+      // 아니면 클릭된 PCD 선택
       const isMultiSelect = event.shiftKey;
       controllerRef.current.handlePCDSelection(event, isMultiSelect, false);
       const selectedNames = Array.from(controllerRef.current.selectedPCDs);
@@ -177,15 +271,15 @@ const WebViewer = () => {
     }
   };
 
-  // 마우스 이동 -> G/R 모드시 오브젝트가 마우스를 따라감
   const handleMouseMove = (event) => {
     controllerRef.current?.handleMouseMove(event);
   };
 
-  // mouseUp -> 안 써도 됨(블렌더식)
-  const handleMouseUp = () => { };
+  const handleMouseUp = () => {};
 
-  // 파일트리
+  /**
+   * 파일트리 선택
+   */
   const handleFileTreeSelect = (fileName, isMultiSelect) => {
     let updatedSelectedFiles = [];
     if (isMultiSelect) {
@@ -197,15 +291,16 @@ const WebViewer = () => {
     }
     setSelectedFiles(updatedSelectedFiles);
 
-    // 컨트롤러 동기화
+    // Controller와 동기화
     controllerRef.current.clearSelection();
     updatedSelectedFiles.forEach((name) => {
-      const file = loadedFiles.find((f) => f.name === name);
-      if (file) {
-        controllerRef.current.toggleSelection(name, file.pcd.getPoints(), true, false);
+      const f = loadedFiles.find((f) => f.name === name);
+      if (f) {
+        controllerRef.current.toggleSelection(name, f.pcd.getPoints(), true, false);
       }
     });
     updateRotationAxes();
+    updateModifiers();
   };
 
   const handleToggleVisibility = (fileName) => {
@@ -271,8 +366,8 @@ const WebViewer = () => {
           </div>
         )}
       </div>
-      {/* 왼쪽 Rotation Axes */}
-      {/* 왼쪽 Rotation Axes */}
+
+      {/* 패널 (T 키로 토글) */}
       {showPanels && selectedFiles.length === 1 && (
         <div
           style={{
@@ -285,67 +380,91 @@ const WebViewer = () => {
             color: "#fff",
             padding: "10px",
             overflowY: "auto",
-            zIndex: 5,
           }}
         >
-          <h3>Rotation Axes</h3>
-          {rotationAxes.length > 0 ? (
-            rotationAxes.map(({ name, axes }) => (
+          <h3>Modifiers</h3>
+          {modifiers.length > 0 ? (
+            modifiers.map(({ name, modifiers: modList }) => (
               <div key={name} style={{ marginBottom: "20px" }}>
                 <h4>{name}</h4>
                 <ul>
-                  {axes.map((axis, index) => (
+                  {modList.map((modifier, index) => (
                     <li key={index}>
-                      <div style={{ marginBottom: "10px" }}>
+                      {modifier.transformation && (
                         <div>
-                          <label>Position: </label>
+                          <label>Transformation Matrix: </label>
                           <input
                             type="text"
-                            value={axis.axisPos.toArray().join(", ")}
+                            value={modifier.transformation.matrix.toArray().join(",")}
                             onChange={(e) =>
-                              handleAxisChange(name, index, "axisPos", e.target.value)
+                              handleModifierChange(name, index, "matrix", e.target.value)
                             }
+                            style={{ width: "100%" }}
                           />
                         </div>
-                        <div>
-                          <label>Direction: </label>
-                          <input
-                            type="text"
-                            value={axis.axisDir.toArray().join(", ")}
-                            onChange={(e) =>
-                              handleAxisChange(name, index, "axisDir", e.target.value)
-                            }
-                          />
+                      )}
+                      {modifier.rotation && (
+                        <div style={{ marginTop: "10px" }}>
+                          <div>
+                            <label>Position: </label>
+                            <input
+                              type="text"
+                              value={modifier.rotation.axisPos.toArray().join(",")}
+                              onChange={(e) =>
+                                handleModifierChange(name, index, "axisPos", e.target.value)
+                              }
+                            />
+                          </div>
+                          <div>
+                            <label>Direction: </label>
+                            <input
+                              type="text"
+                              value={modifier.rotation.axisDir.toArray().join(",")}
+                              onChange={(e) =>
+                                handleModifierChange(name, index, "axisDir", e.target.value)
+                              }
+                            />
+                          </div>
+                          <div>
+                            <label>Speed: </label>
+                            <input
+                              type="number"
+                              step="0.1"
+                              value={modifier.rotation.speed}
+                              onChange={(e) =>
+                                handleModifierChange(name, index, "speed", e.target.value)
+                              }
+                            />
+                          </div>
                         </div>
-                        <div>
-                          <label>Speed: </label>
-                          <input
-                            type="number"
-                            step="0.1"
-                            value={axis.speed}
-                            onChange={(e) =>
-                              handleAxisChange(name, index, "speed", e.target.value)
-                            }
-                          />
-                        </div>
-                        <button
-                          onClick={() => handleRemoveRotationAxis(name, index)}
-                          style={{ marginTop: "5px", color: "red" }}
-                        >
-                          Remove Axis
-                        </button>
-                      </div>
+                      )}
+                      <button
+                        onClick={() => handleRemoveModifier(name, index)}
+                        style={{ marginTop: "5px", color: "red" }}
+                      >
+                        Remove Modifier
+                      </button>
                     </li>
                   ))}
                 </ul>
-                <button onClick={() => handleAddRotationAxis(name)}>Add New Axis</button>
               </div>
             ))
           ) : (
             <div style={{ marginBottom: "20px" }}>
-              <h4>No Rotation Axes Found</h4>
-              <button onClick={() => handleAddRotationAxis(selectedFiles[0])}>
-                Add First Axis
+              <p>No Modifiers Found</p>
+            </div>
+          )}
+
+          {selectedFiles.length === 1 && (
+            <div>
+              <button
+                onClick={() => handleAddModifier(selectedFiles[0], "rotation")}
+                style={{ marginRight: "10px" }}
+              >
+                Add Rotation
+              </button>
+              <button onClick={() => handleAddModifier(selectedFiles[0], "transformation")}>
+                Add Transformation
               </button>
             </div>
           )}
@@ -360,7 +479,6 @@ const WebViewer = () => {
           onToggleVisibility={handleToggleVisibility}
           onDeleteFile={handleDeleteFile}
         />
-
       )}
     </div>
   );

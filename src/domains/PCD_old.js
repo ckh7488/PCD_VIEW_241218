@@ -1,6 +1,10 @@
 // src/domains/PCD.js
 import * as THREE from "three";
 
+/**
+ * PCD 클래스
+ * - Three.js의 position, rotation, scale을 직접 사용하는 버전
+ */
 export default class PCD {
   constructor(name) {
     this.name = name;
@@ -8,8 +12,10 @@ export default class PCD {
     this.size = 1;
     this.color = new THREE.Color(0xffffff);
 
-    // Three.js Points
+    // Three.js Points Object
     this.geometry = new THREE.BufferGeometry();
+
+    // DynamicDrawUsage로 설정해두면, 빈 속성이라도 이후 추가/삭제에 최적화됨
     const positionAttr = new THREE.Float32BufferAttribute([], 3);
     positionAttr.setUsage(THREE.DynamicDrawUsage);
     this.geometry.setAttribute("position", positionAttr);
@@ -23,144 +29,159 @@ export default class PCD {
       color: this.color,
       transparent: true,
       opacity: 1,
-      vertexColors: true,
+      vertexColors: true, // color Attribute를 사용하기 위해 활성화
     });
 
     this.points = new THREE.Points(this.geometry, this.material);
-    this.points.name = this.name;
+    this.points.name = name; // 씬에서 탐색 가능하도록 네임 태그
 
-    // 통합 Modifier 스택
-    // - { transformation: { matrix: THREE.Matrix4 } }
-    // - { rotation: { axisPos, axisDir, speed } }
-    this.modifiers = [];
+    // realtiem rotation 관련
+    this.rotationData = []; // { axisPos: Vector3, axisDir: Vector3, speed: number }    // ?
 
-    // 기본 상태, 최종 누적 상태
+    // Modifier 기능 추가
+    // 기본 상태: Identity Matrix
     this.baseMatrix = new THREE.Matrix4().identity();
+    this.modifiers = []; // [{ transformation: { matrix: Matrix4 } }, { rotation: { axisPos, axisDir, speed } }]
+    // 현재 상태
     this.currentMatrix = new THREE.Matrix4().identity();
   }
 
-  /**
-   * 통합 Modifier
-   */
+  // Modifier 추가
   addModifier(modifier) {
     this.modifiers.push(modifier);
+    this.applyModifiers(); // 상태 재계산
   }
 
+  // Modifier 제거
   removeModifier(index) {
     if (index >= 0 && index < this.modifiers.length) {
       this.modifiers.splice(index, 1);
     }
+    this.applyModifiers(); // 상태 재계산
   }
 
-  clearModifiers() {
-    this.modifiers = [];
-  }
-
-  /**
-   * applyModifiers():
-   *  1) baseMatrix에서 시작
-   *  2) transformation -> multiply
-   *  3) rotation -> accumAngle 이용해 축 회전 매트릭스 곱
-   *  4) 최종 행렬 currentMatrix로 저장
-   *  5) Three.js Points에 반영(position, quaternion, scale)
-   */
+  // Modifier 스택을 순회하며 상태 계산
   applyModifiers() {
     let resultMatrix = this.baseMatrix.clone();
-
-    for (const mod of this.modifiers) {
-      if (mod.transformation) {
-        // 행렬 그대로 누적
-        resultMatrix.multiply(mod.transformation.matrix);
-      } else if (mod.rotation) {
-        const { axisPos, axisDir, accumAngle } = mod.rotation;
-        if (!axisDir) continue;
-
-        // (pivot -> 회전 -> pivot 복원)
-        const pivotT = new THREE.Matrix4().makeTranslation(-axisPos.x, -axisPos.y, -axisPos.z);
-        const pivotTInv = new THREE.Matrix4().makeTranslation(axisPos.x, axisPos.y, axisPos.z);
-        const rotMat = new THREE.Matrix4().makeRotationAxis(axisDir, accumAngle || 0);
-
-        resultMatrix = pivotTInv.clone().multiply(rotMat).multiply(pivotT).multiply(resultMatrix);
+  
+    this.modifiers.forEach((modifier) => {
+      if (modifier.transformation) {
+        // Transformation Modifier 적용
+        resultMatrix.multiply(modifier.transformation.matrix);
+      } else if (modifier.rotation) {
+        // Modifier 회전 상태는 누적하지 않음 (실시간 회전은 별도로 처리)
       }
-    }
-
+    });
+  
     this.currentMatrix.copy(resultMatrix);
-
-    // Decompose to position/quaternion/scale
+  
+    // 상태를 Three.js Points 객체에 반영
     const position = new THREE.Vector3();
     const quaternion = new THREE.Quaternion();
     const scale = new THREE.Vector3();
-
     this.currentMatrix.decompose(position, quaternion, scale);
-
+  
     this.points.position.copy(position);
     this.points.quaternion.copy(quaternion);
     this.points.scale.copy(scale);
   }
+  
+  
 
- /**
-   * updateRotation(deltaTime):
-   *  - rotation Modifier의 accumAngle += speed * deltaTime
-   *  - "직접 points 수정"은 하지 않음(누적각도만 갱신)
+  // 모든 Modifier 제거
+  clearModifiers() {
+    this.modifiers = [];
+    this.applyModifiers(); // 기본 상태로 복원
+  }
+
+
+  /**
+   * 회전 축 반환
    */
- updateRotation(deltaTime = 0.016) {
-    for (const mod of this.modifiers) {
-      if (!mod.rotation) continue;
-      const r = mod.rotation;
-      if (r.speed === 0) continue;
-
-      r.accumAngle = (r.accumAngle || 0) + r.speed * deltaTime;
-    }
-  }
-
-  // 회전 축 관련 Helper
-  addRotationAxis(axisPos, axisDir, speed) {
-    this.modifiers.push({
-      rotation: {
-        axisPos: axisPos.clone(),
-        axisDir: axisDir.clone().normalize(),
-        speed,
-        accumAngle: 0, // 초기에 0
-      },
-    });
-  }
-
-  removeRotationAxis(index) {
-    if (index < 0 || index >= this.modifiers.length) return;
-    const mod = this.modifiers[index];
-    if (!mod.rotation) return;
-    this.removeModifier(index);
-  }
-
-  updateRotationAxis(index, axisPos, axisDir, speed) {
-    if (index < 0 || index >= this.modifiers.length) return;
-    const mod = this.modifiers[index];
-    if (!mod.rotation) return;
-    mod.rotation.axisPos = axisPos.clone();
-    mod.rotation.axisDir = axisDir.clone().normalize();
-    mod.rotation.speed = speed;
-    // accumAngle은 기존값 유지
-  }
-
   getRotationAxes() {
-    return this.modifiers
-      .map((mod, i) => {
-        if (mod.rotation) {
-          return {
-            index: i,
-            axisPos: mod.rotation.axisPos.clone(),
-            axisDir: mod.rotation.axisDir.clone(),
-            speed: mod.rotation.speed,
-            accumAngle: mod.rotation.accumAngle || 0,
-          };
-        }
-        return null;
-      })
-      .filter(Boolean);
+    return this.rotationData.map((data) => ({
+      axisPos: data.axisPos.clone(),
+      axisDir: data.axisDir.clone(),
+      speed: data.speed,
+    }));
+  }
+  
+  // **새로운 회전 축 업데이트 메서드**
+  updateRotationAxis(index, axisPos, axisDir, speed) {
+    if (index < 0 || index >= this.rotationData.length) {
+      throw new Error("Invalid rotation axis index");
+    }
+
+    // 업데이트할 축 데이터 변경
+    const rotationAxis = this.rotationData[index];
+    rotationAxis.axisPos = axisPos.clone();
+    rotationAxis.axisDir = axisDir.clone().normalize();
+    rotationAxis.speed = speed;
   }
 
   /**
-   * 점군 추가/삭제/조회 등
+ * 회전 축 추가
+ * @param {THREE.Vector3} axisPos - 축의 기준점
+ * @param {THREE.Vector3} axisDir - 축의 방향 벡터
+ * @param {number} speed - 회전 속도 (라디안/초)
+ */
+  addRotationAxis(axisPos, axisDir, speed) {
+    this.rotationData.push({
+      axisPos: axisPos.clone(),
+      axisDir: axisDir.clone().normalize(),
+      speed,
+    });
+  }
+
+  /**
+   * 특정 회전 축 제거
+   * @param {number} index - 제거할 축의 인덱스
+   */
+  removeRotationAxis(index) {
+    if (index >= 0 && index < this.rotationData.length) {
+      this.rotationData.splice(index, 1);
+    }
+  }
+
+  /**
+   * 모든 회전 축 제거
+   */
+  clearRotation() {
+    this.rotationData = [];
+  }
+
+  /**
+   * 매 프레임 호출되어 누적 회전 반영
+   */
+  updateRotation(deltaTime = 0.016) {
+    if (this.rotationData.length === 0) return;
+  
+    this.rotationData.forEach(({ axisPos, axisDir, speed }) => {
+      if (speed === 0) return;
+  
+      // 각도 계산
+      const angle = speed * deltaTime;
+  
+      // 회전 쿼터니언 생성
+      const deltaQ = new THREE.Quaternion().setFromAxisAngle(axisDir, angle);
+  
+      // 중심을 기준으로 이동한 뒤 회전 적용
+      const currentPos = this.points.position.clone();
+      const relativePos = currentPos.sub(axisPos);
+      relativePos.applyQuaternion(deltaQ);
+      const newPos = axisPos.clone().add(relativePos);
+  
+      // 회전 적용
+      this.points.position.copy(newPos);
+      this.points.quaternion.multiply(deltaQ);
+    });
+  }
+  
+
+  /**
+   * 포인트 추가
+   * pointArray = [[x, y, z, color], [x,y,z,color], ...]
+   * color는 0xRRGGBB 형태
    */
   addPoints(pointArray) {
     const positions = Array.from(this.geometry.attributes.position.array);
@@ -186,14 +207,27 @@ export default class PCD {
     this.geometry.attributes.color.needsUpdate = true;
   }
 
+  /**
+   * 포인트들(Three.js Points) 반환
+   */
+  getPoints() {
+    return this.points;
+  }
+
+  /**
+   * 인덱스를 이용해 특정 포인트 제거
+   */
   removePointsByIndices(indices) {
     if (!Array.isArray(indices)) {
       throw new Error("Indices must be provided as an array.");
     }
+
     const positions = Array.from(this.geometry.attributes.position.array);
     const colors = Array.from(this.geometry.attributes.color.array);
 
+    // 중복 제거 후 내림차순 정렬
     const uniqueSortedIndices = [...new Set(indices)].sort((a, b) => b - a);
+
     uniqueSortedIndices.forEach((index) => {
       const startIdx = index * 3;
       if (startIdx < positions.length) {
@@ -214,10 +248,6 @@ export default class PCD {
     this.geometry.attributes.color.needsUpdate = true;
   }
 
-  getPoints() {
-    return this.points;
-  }
-
   /**
    * 가시성
    */
@@ -231,7 +261,7 @@ export default class PCD {
   }
 
   /**
-   * 크기
+   * 포인트 크기
    */
   setSize(size) {
     this.size = size;
