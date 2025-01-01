@@ -1,8 +1,8 @@
 // src/components/WebViewer/WebViewer.jsx
 import React, { useRef, useEffect, useState } from "react";
 import { WebController } from "../../domains/WebController";
-import { readPCDFile } from "../../domains/PCDFileReader"; // 가정: 직접 구현
-import PCDFileTree from "./PCDFileTree";                 // 가정: 좌측 파일 트리
+import { readPCDFile } from "../../domains/PCDFileReader";
+import PCDFileTree from "./PCDFileTree";
 import * as THREE from "three";
 
 const WebViewer = () => {
@@ -10,9 +10,19 @@ const WebViewer = () => {
   const controllerRef = useRef(null);
   const [isDragging, setIsDragging] = useState(false);
   const [loadedFiles, setLoadedFiles] = useState([]);
+  const [rotationAxes, setRotationAxes] = useState([]);
   const [selectedFiles, setSelectedFiles] = useState([]);
   const [transformationMode, setTransformationMode] = useState(null);
+  const [showPanels, setShowPanels] = useState(false); // T 키로 토글
   const dragCounter = useRef(0);
+
+  useEffect(() => {
+    if (selectedFiles.length > 0) {
+      updateRotationAxes(); // 선택된 파일에 대한 축 정보 업데이트
+    } else {
+      setRotationAxes([]); // 선택된 파일이 없을 경우 초기화
+    }
+  }, [selectedFiles]);
 
   useEffect(() => {
     if (containerRef.current) {
@@ -26,84 +36,88 @@ const WebViewer = () => {
     }
   }, []);
 
-  // 키보드 단축키
+  // 키보드
   useEffect(() => {
-    const handleKeyDown = (event) => {
-      switch (event.key.toLowerCase()) {
-        case "c": {
-          // 선택된 PCD들에 회전 축, 속도 설정
-          if (selectedFiles.length > 0) {
-            const axisInput = prompt("Enter rotation axis as x,y,z (e.g., 0,1,0):", "0,1,0");
-            const speedInput = prompt("Enter rotation speed (e.g., 0.01):", "0.01");
-            if (axisInput && speedInput) {
-              const axis = axisInput.split(",").map(Number);
-              const speed = parseFloat(speedInput);
-              if (axis.length === 3 && !isNaN(speed)) {
-                const axisVector = new THREE.Vector3(...axis).normalize();
-                controllerRef.current.setRotation(selectedFiles, axisVector, speed);
-              } else {
-                alert("Invalid input. Please provide valid axis and speed values.");
-              }
-            }
-          }
-          break;
-        }
-        case "a": {
-          // 축 표시 토글
-          controllerRef.current.toggleAxis();
-          break;
-        }
-        case "g": {
-          if (controllerRef.current.getTransformationMode()) {
-            // 이미 변환중이면 취소 or 적용
-            controllerRef.current.cancelTransformation();
-            setTransformationMode(null);
-            break;
-          }
-          // 새 transform 모드
-          if (!controllerRef.current.startTransformation("translate")) break;
-          setTransformationMode("translate");
-          break;
-        }
-        case "s": {
-          if (controllerRef.current.getTransformationMode()) {
-            controllerRef.current.cancelTransformation();
-            setTransformationMode(null);
-            break;
-          }
-          if (!controllerRef.current.startTransformation("scale")) break;
-          setTransformationMode("scale");
-          break;
-        }
-        case "r": {
-          if (controllerRef.current.getTransformationMode()) {
-            controllerRef.current.cancelTransformation();
-            setTransformationMode(null);
-            break;
-          }
-          if (!controllerRef.current.startTransformation("rotate")) break;
-          setTransformationMode("rotate");
-          break;
-        }
-        case "escape": {
-          controllerRef.current.cancelTransformation();
-          setTransformationMode(null);
-          controllerRef.current.clearSelection();
-          setSelectedFiles([]);
-          break;
-        }
-        default:
-          break;
-      }
-    };
 
+    const handleKeyDown = (event) => {
+      if (event.key.toLowerCase() === "t") {
+        setShowPanels((prev) => !prev); // T 키로 토글
+      }
+      if (!controllerRef.current) return;
+      if (event.key.toLowerCase() === "escape") {
+        setSelectedFiles([]); // 선택된 파일 초기화
+        setRotationAxes([]); // 회전 축 데이터 초기화
+        controllerRef.current.cancelTransformation();
+        controllerRef.current.clearSelection();
+        return;
+      }
+      controllerRef.current.handleKeyDown(event);
+      setTransformationMode(controllerRef.current.getTransformationMode());
+    };
     window.addEventListener("keydown", handleKeyDown);
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [selectedFiles]);
+  }, []);
 
-  // 드래그&드롭 (PCD 파일 로드)
+  // 회전 축 정보 업데이트
+  const updateRotationAxes = () => {
+    if (!controllerRef.current) return;
+
+    const axes = [];
+    selectedFiles.forEach((fileName) => {
+      const pcd = controllerRef.current.PCDs.get(fileName);
+      if (pcd) {
+        const pcdAxes = pcd.getRotationAxes();
+        axes.push({ name: fileName, axes: pcdAxes });
+      }
+    });
+    setRotationAxes(axes);
+  };
+
+  // 회전 축 추가
+  const handleAddRotationAxis = (fileName) => {
+    const controller = controllerRef.current;
+    if (!controller) return;
+
+    const axisPos = new THREE.Vector3(0, 0, 0); // 기준점
+    const axisDir = new THREE.Vector3(1, 0, 0); // X축 방향
+    const speed = 1.0; // 속도
+
+    controller.addRotationAxisToPCD(fileName, axisPos, axisDir, speed);
+    updateRotationAxes();
+  };
+
+  // 회전 속성 변경
+  const handleAxisChange = (fileName, index, field, value) => {
+    const controller = controllerRef.current;
+    if (!controller) return;
+
+    const pcd = controller.PCDs.get(fileName);
+    if (!pcd) return;
+
+    const newRotationAxes = [...rotationAxes];
+    const axis = newRotationAxes.find((item) => item.name === fileName).axes[index];
+    if (field === "speed") {
+      axis.speed = parseFloat(value);
+    } else if (field === "axisPos" || field === "axisDir") {
+      axis[field] = new THREE.Vector3(...value.split(",").map(Number));
+    }
+
+    pcd.updateRotationAxis(index, axis.axisPos, axis.axisDir, axis.speed);
+    setRotationAxes(newRotationAxes);
+  };
+
+  // 회전 축 삭제
+  const handleRemoveRotationAxis = (fileName, index) => {
+    const controller = controllerRef.current;
+    if (!controller) return;
+
+    controller.removeRotationAxisFromPCD(fileName, index);
+    updateRotationAxes();
+  };
+
+  // 드래그&드롭
   const handleDragEnter = (event) => {
     event.preventDefault();
     event.stopPropagation();
@@ -136,44 +150,54 @@ const WebViewer = () => {
 
     for (const file of pcdFiles) {
       try {
-        const fileExists = loadedFiles.some((f) => f.name === file.name);
-        if (fileExists) {
-          console.warn(`File ${file.name} is already loaded.`);
-          continue;
-        }
-        const pcd = await readPCDFile(file);
-        // WebController에 추가
-        controllerRef.current.addPCD(file.name, pcd);
-        setLoadedFiles((prev) => [...prev, { name: file.name, pcd }]);
+        const result = await readPCDFile(file, loadedFiles);
+        const { pcd, fileName } = result;
+        controllerRef.current.addPCD(fileName, pcd);
+        setLoadedFiles((prev) => [...prev, { name: fileName, pcd }]);
       } catch (error) {
         console.error("Failed to read PCD file:", error);
       }
     }
   };
 
-  // 캔버스 클릭 → PCD 선택
+  /**
+   * 클릭 -> 변환중이면 확정, 아니면 PCD선택
+   */
   const handleCanvasClick = (event) => {
     if (!controllerRef.current) return;
-    const isMultiSelect = event.shiftKey;
-    controllerRef.current.handlePCDSelection(event, isMultiSelect, false);
-    // 선택 목록 갱신
-    const selectedNames = Array.from(controllerRef.current.selectedPCDs);
-    setSelectedFiles(selectedNames);
+    const { appState } = controllerRef.current;
+    if (appState === "TRANSFORM") {
+      controllerRef.current.applyTransformation();
+      setTransformationMode(null);
+    } else {
+      const isMultiSelect = event.shiftKey;
+      controllerRef.current.handlePCDSelection(event, isMultiSelect, false);
+      const selectedNames = Array.from(controllerRef.current.selectedPCDs);
+      setSelectedFiles(selectedNames);
+    }
   };
 
-  // 좌측 트리에서 파일 선택 시
+  // 마우스 이동 -> G/R 모드시 오브젝트가 마우스를 따라감
+  const handleMouseMove = (event) => {
+    controllerRef.current?.handleMouseMove(event);
+  };
+
+  // mouseUp -> 안 써도 됨(블렌더식)
+  const handleMouseUp = () => { };
+
+  // 파일트리
   const handleFileTreeSelect = (fileName, isMultiSelect) => {
     let updatedSelectedFiles = [];
     if (isMultiSelect) {
       updatedSelectedFiles = selectedFiles.includes(fileName)
-        ? selectedFiles.filter((name) => name !== fileName)
+        ? selectedFiles.filter((n) => n !== fileName)
         : [...selectedFiles, fileName];
     } else {
       updatedSelectedFiles = [fileName];
     }
     setSelectedFiles(updatedSelectedFiles);
 
-    // 컨트롤러에서도 하이라이트
+    // 컨트롤러 동기화
     controllerRef.current.clearSelection();
     updatedSelectedFiles.forEach((name) => {
       const file = loadedFiles.find((f) => f.name === name);
@@ -181,6 +205,20 @@ const WebViewer = () => {
         controllerRef.current.toggleSelection(name, file.pcd.getPoints(), true, false);
       }
     });
+    updateRotationAxes();
+  };
+
+  const handleToggleVisibility = (fileName) => {
+    const targetFile = loadedFiles.find((f) => f.name === fileName);
+    if (targetFile) {
+      targetFile.pcd.toggleVisibility();
+    }
+  };
+
+  const handleDeleteFile = (fileName) => {
+    controllerRef.current.unregisterObject(fileName);
+    setLoadedFiles((prev) => prev.filter((f) => f.name !== fileName));
+    setSelectedFiles((prev) => prev.filter((n) => n !== fileName));
   };
 
   return (
@@ -193,9 +231,8 @@ const WebViewer = () => {
         onDrop={handleDrop}
         onDragLeave={handleDragLeave}
         onClick={handleCanvasClick}
-        onMouseDown={(e) => controllerRef.current?.handleMouseDown(e)}
-        onMouseMove={(e) => controllerRef.current?.handleMouseMove(e)}
-        onMouseUp={() => controllerRef.current?.handleMouseUp(setTransformationMode)}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
       >
         {isDragging && (
           <div
@@ -234,13 +271,97 @@ const WebViewer = () => {
           </div>
         )}
       </div>
+      {/* 왼쪽 Rotation Axes */}
+      {/* 왼쪽 Rotation Axes */}
+      {showPanels && selectedFiles.length === 1 && (
+        <div
+          style={{
+            position: "absolute",
+            top: 0,
+            left: 0,
+            width: "300px",
+            height: "100%",
+            backgroundColor: "#222",
+            color: "#fff",
+            padding: "10px",
+            overflowY: "auto",
+            zIndex: 5,
+          }}
+        >
+          <h3>Rotation Axes</h3>
+          {rotationAxes.length > 0 ? (
+            rotationAxes.map(({ name, axes }) => (
+              <div key={name} style={{ marginBottom: "20px" }}>
+                <h4>{name}</h4>
+                <ul>
+                  {axes.map((axis, index) => (
+                    <li key={index}>
+                      <div style={{ marginBottom: "10px" }}>
+                        <div>
+                          <label>Position: </label>
+                          <input
+                            type="text"
+                            value={axis.axisPos.toArray().join(", ")}
+                            onChange={(e) =>
+                              handleAxisChange(name, index, "axisPos", e.target.value)
+                            }
+                          />
+                        </div>
+                        <div>
+                          <label>Direction: </label>
+                          <input
+                            type="text"
+                            value={axis.axisDir.toArray().join(", ")}
+                            onChange={(e) =>
+                              handleAxisChange(name, index, "axisDir", e.target.value)
+                            }
+                          />
+                        </div>
+                        <div>
+                          <label>Speed: </label>
+                          <input
+                            type="number"
+                            step="0.1"
+                            value={axis.speed}
+                            onChange={(e) =>
+                              handleAxisChange(name, index, "speed", e.target.value)
+                            }
+                          />
+                        </div>
+                        <button
+                          onClick={() => handleRemoveRotationAxis(name, index)}
+                          style={{ marginTop: "5px", color: "red" }}
+                        >
+                          Remove Axis
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+                <button onClick={() => handleAddRotationAxis(name)}>Add New Axis</button>
+              </div>
+            ))
+          ) : (
+            <div style={{ marginBottom: "20px" }}>
+              <h4>No Rotation Axes Found</h4>
+              <button onClick={() => handleAddRotationAxis(selectedFiles[0])}>
+                Add First Axis
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
-      {/* 좌측 트리 뷰 */}
-      <PCDFileTree
-        files={loadedFiles}
-        selectedFiles={selectedFiles}
-        onSelectFile={handleFileTreeSelect}
-      />
+      {showPanels && (
+        <PCDFileTree
+          files={loadedFiles}
+          selectedFiles={selectedFiles}
+          onSelectFile={handleFileTreeSelect}
+          onToggleVisibility={handleToggleVisibility}
+          onDeleteFile={handleDeleteFile}
+        />
+
+      )}
     </div>
   );
 };

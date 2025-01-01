@@ -1,6 +1,7 @@
 // src/domains/WebRenderer.js
 import * as THREE from "three";
-import PCD from "./PCD";
+import { OrbitControls } from "three/examples/jsm/controls/OrbitControls";
+import { TrackballControls } from "three/examples/jsm/controls/TrackballControls";
 
 export class WebRenderer {
   constructor(container) {
@@ -10,19 +11,18 @@ export class WebRenderer {
     this.renderer = null;
     this.controls = null;
 
-    // 이곳에 회전해야 할 객체(PCD)들을 저장
-    this.CRobjects = new Map();
-
-    // 축 표시용
+    this.rotatingPCDs = [];
     this.axisHelpers = [];
+    this.intersectableObjects = [];  // Raycast 대상
 
-    // 레이캐스팅 대상
-    this.intersectableObjects = [];
+    this.controllerType = "orbit";
+
+    this.controller = null;
   }
 
-  init(controllerType = "orbit") {
+  init(controllerType = "orbit", controller) {
+    this.controller = controller;
     this.scene = new THREE.Scene();
-    // 간단한 배경색
     this.scene.background = new THREE.Color(0x222222);
 
     this.camera = new THREE.PerspectiveCamera(
@@ -42,16 +42,24 @@ export class WebRenderer {
     window.addEventListener("resize", this.onWindowResize.bind(this), false);
   }
 
-  setController(controllerType) {
+  setController(controllerType = "orbit") {
+    this.controllerType = controllerType;
     if (this.controls) {
       this.controls.dispose();
+      this.controls = null;
     }
-    if (controllerType === "orbit") {
-      const { OrbitControls } = require("three/examples/jsm/controls/OrbitControls");
-      this.controls = new OrbitControls(this.camera, this.renderer.domElement);
-      this.controls.enableDamping = true;
-      this.controls.dampingFactor = 0.05;
-      this.controls.update();
+    switch (controllerType) {
+      case "trackball":
+        this.controls = new TrackballControls(this.camera, this.renderer.domElement);
+        // trackball 기본 설정
+        this.controls.rotateSpeed = 1.0;
+        break;
+      case "orbit":
+      default:
+        this.controls = new OrbitControls(this.camera, this.renderer.domElement);
+        // damping 끔 → 마찰 없이 사용자가 멈추면 즉시 정지
+        this.controls.enableDamping = false;
+        break;
     }
   }
 
@@ -61,56 +69,52 @@ export class WebRenderer {
     this.renderer.setSize(this.container.clientWidth, this.container.clientHeight);
   }
 
-  /**
-   * 씬에 등록
-   */
   registerObject(name, pcdInstance) {
-    if (this.CRobjects.has(name)) {
-      console.warn(`Object ${name} is already registered.`);
+    if (this.scene.getObjectByName(name)) {
+      console.warn(`Object ${name} is already registered in scene.`);
       return;
     }
-    this.CRobjects.set(name, pcdInstance);
+    pcdInstance.points.userData.pcdInstance = pcdInstance;
     this.scene.add(pcdInstance.points);
   }
 
   unregisterObject(name) {
-    const object = this.CRobjects.get(name);
-    if (object) {
-      this.scene.remove(object.points);
-      this.CRobjects.delete(name);
+    const obj = this.scene.getObjectByName(name);
+    if (obj) {
+      this.scene.remove(obj);
+      const pcd = obj.userData.pcdInstance;
+      if (pcd) {
+        this.removeFromRotatingList(pcd);
+      }
     } else {
-      console.warn(`Object ${name} not found in CRobjects.`);
+      console.warn(`Object ${name} not found in scene.`);
     }
   }
 
-  /**
-   * 로테이션 대상을 필터링
-   */
-  getRotationTargets() {
-    return Array.from(this.CRobjects.values()).filter(
-      (obj) => obj instanceof PCD && obj.rotationSpeed !== 0
-    );
+  addToRotatingList(pcd) {
+    if (!this.rotatingPCDs.includes(pcd)) {
+      this.rotatingPCDs.push(pcd);
+    }
   }
 
-  /**
-   * 매 프레임, 회전 대상 업데이트
-   */
+  removeFromRotatingList(pcd) {
+    const idx = this.rotatingPCDs.indexOf(pcd);
+    if (idx >= 0) {
+      this.rotatingPCDs.splice(idx, 1);
+    }
+  }
+
   updateRotation(deltaTime = 0.016) {
-    this.getRotationTargets().forEach((object) => {
-      object.updateRotation(deltaTime);
+    this.rotatingPCDs.forEach((pcd) => {
+      pcd.updateRotation(deltaTime);
     });
   }
 
-  /**
-   * 축 표시
-   */
   showAxis(objs) {
-    // 씬의 중심축
     const centerAxis = new THREE.AxesHelper(200);
     this.scene.add(centerAxis);
     this.axisHelpers.push(centerAxis);
 
-    // 선택된 객체별 축
     objs.forEach((objName) => {
       const object = this.getObjectByName(objName);
       if (!object) {
@@ -118,7 +122,6 @@ export class WebRenderer {
         return;
       }
       const axis = new THREE.AxesHelper(200);
-      // 축 위치를 객체 위치로 이동
       axis.position.copy(object.position);
       this.scene.add(axis);
       this.axisHelpers.push(axis);
@@ -140,49 +143,42 @@ export class WebRenderer {
     }
   }
 
-  /**
-   * 씬에 일반 Object3D or Points 추가 (포인트 클릭용 Raycast)
-   */
   addObject(threeObj) {
     this.scene.add(threeObj);
     this.intersectableObjects.push(threeObj);
   }
 
-  /**
-   * PCD를 씬에 추가 (레이캐스트용 intersectableObjects 등록)
-   */
   addPCD(name, pcdPoints) {
     pcdPoints.name = name;
     this.addObject(pcdPoints);
   }
 
-  /**
-   * 씬에서 name으로 오브젝트 가져오기
-   */
   getObjectByName(name) {
     return this.scene.getObjectByName(name);
   }
 
   /**
-   * 렌더 루프
+   * visible=false 인 오브젝트는 선택 대상 제외 → Raycast용 헬퍼
    */
+  getVisibleObjects() {
+    return this.intersectableObjects.filter((obj) => obj.visible);
+  }
+
   animate() {
     requestAnimationFrame(this.animate.bind(this));
 
-    // 회전 업데이트
     this.updateRotation();
 
-    // 컨트롤 업데이트
+    if (this.controller) {
+      this.controller.updateHighlights();
+    }
+
     if (this.controls) {
       this.controls.update();
     }
-
     this.renderer.render(this.scene, this.camera);
   }
 
-  /**
-   * 리소스 정리
-   */
   dispose() {
     window.removeEventListener("resize", this.onWindowResize.bind(this));
     if (this.controls) {
