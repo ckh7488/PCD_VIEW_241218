@@ -39,10 +39,10 @@ export class WebController {
     this.renderer.setController(newType);
   }
 
-addPCD(name, pcdInstance) {
-  this.PCDs.set(name, pcdInstance);
-  this.renderer.addPCD(name, pcdInstance); // ← 여기서 pcdInstance를 직접 넘김
-}
+  addPCD(name, pcdInstance) {
+    this.PCDs.set(name, pcdInstance);
+    this.renderer.addPCD(name, pcdInstance); // ← 여기서 pcdInstance를 직접 넘김
+  }
 
   unregisterObject(name) {
     this.PCDs.delete(name);
@@ -496,7 +496,6 @@ addPCD(name, pcdInstance) {
       // newPosWorld = currentIsect + offset
       // delta = newPosWorld - originalPos
       // 최종 translation matrix
-      console.log(this.originalTransforms)
       this.selectedPCDs.forEach((selName) => {
         const offset = this.transformData.get(selName);
         if (!offset) return;
@@ -554,7 +553,6 @@ addPCD(name, pcdInstance) {
           translation.y,
           translation.z
         );
-        console.log(mat)
         mod.transformation.matrix.copy(mat);
       });
     }
@@ -565,46 +563,98 @@ addPCD(name, pcdInstance) {
   
 
   handleMouseMove_Rotate(event) {
-    if (!this.originalTransforms) return;
+    if (this.originalTransforms.length === 0) {
+      console.warn("this.originalTransforms is empty.");
+      return;
+    }
+  
     const rect = this.renderer.renderer.domElement.getBoundingClientRect();
     const mx = (event.clientX - rect.left) / rect.width;
+  
+    // 처음 마우스 다운(or 이동) 시점 기록
     if (!this._mouseStart2D) {
       this._mouseStart2D = { x: mx, y: 0 };
     }
+  
+    // 드래그 이동량 -> 회전 각도
     const dx = mx - this._mouseStart2D.x;
-    const angle = dx * Math.PI * 10;
-
-    this.originalTransforms.forEach(({ pcd, rotation }) => {
-      if (!this.transformationAxis) {
-        pcd.points.rotation.set(rotation.x, rotation.y + angle, rotation.z);
-      } else {
-        if (this.transformationAxis === "x") {
-          pcd.points.rotation.set(rotation.x + angle, rotation.y, rotation.z);
-        } else if (this.transformationAxis === "y") {
-          pcd.points.rotation.set(rotation.x, rotation.y + angle, rotation.z);
-        } else if (this.transformationAxis === "z") {
-          pcd.points.rotation.set(rotation.x, rotation.y, rotation.z + angle);
-        }
-      }
+    const angle = dx * Math.PI * 10; // 10은 임의 배율
+  
+    // 회전축 결정: 없으면 기본 y축
+    const axis = this.transformationAxis || "y";
+    const axisVec = new THREE.Vector3();
+    switch (axis) {
+      case "x":
+        axisVec.set(1, 0, 0);
+        break;
+      case "y":
+        axisVec.set(0, 1, 0);
+        break;
+      case "z":
+        axisVec.set(0, 0, 1);
+        break;
+      default:
+        axisVec.set(0, 1, 0);
+        break;
+    }
+  
+    // 회전 행렬
+    const rotationMat = new THREE.Matrix4().makeRotationAxis(axisVec, angle);
+  
+    // 선택된 각 PCD의 임시 Modifier에 누적 행렬을 넣어준다
+    this.selectedPCDs.forEach((selName) => {
+      const pcd = this.PCDs.get(selName);
+      const modIndex = this.transformationModIndices.get(selName);
+      if (modIndex === undefined) return;
+  
+      const mod = pcd.modifiers[modIndex];
+      if (!mod?.transformation) return;
+  
+      // "현재까지의 transform" 대신 "회전 차이만" 적용
+      // => 최종 시 `baseMatrix * (회전행렬)` 형태로 사용됨
+      mod.transformation.matrix.copy(rotationMat);
     });
+  
+    // 선택 박스(헬퍼) 업데이트
     Object.values(this.selectionHelpers).forEach((helper) => helper.update());
   }
+  
 
   handleMouseMove_Scale(event) {
-    if (!this.originalTransforms) return;
+    if (this.originalTransforms.length === 0) {
+      console.warn("this.originalTransforms is empty.");
+      return;
+    }
+  
     const rect = this.renderer.renderer.domElement.getBoundingClientRect();
     const mx = (event.clientX - rect.left) / rect.width;
+  
     if (!this._mouseStart2D) {
       this._mouseStart2D = { x: mx, y: 0 };
     }
+  
     const dx = mx - this._mouseStart2D.x;
-    const factor = 1 + dx * 100;
-
-    this.originalTransforms.forEach(({ pcd, scale }) => {
-      pcd.points.scale.copy(scale.clone().multiplyScalar(factor));
+    const factor = 1 + dx * 100; // 100은 임의 배율
+  
+    // 스케일 행렬
+    const scaleMat = new THREE.Matrix4().makeScale(factor, factor, factor);
+  
+    // 선택된 각 PCD 임시 Modifier에 할당
+    this.selectedPCDs.forEach((selName) => {
+      const pcd = this.PCDs.get(selName);
+      const modIndex = this.transformationModIndices.get(selName);
+      if (modIndex === undefined) return;
+  
+      const mod = pcd.modifiers[modIndex];
+      if (!mod?.transformation) return;
+  
+      mod.transformation.matrix.copy(scaleMat);
     });
+  
+    // 헬퍼 업데이트
     Object.values(this.selectionHelpers).forEach((helper) => helper.update());
   }
+  
 
   rayLineIntersect(rayA, rayB) {
     const Apos = rayA.origin.clone();

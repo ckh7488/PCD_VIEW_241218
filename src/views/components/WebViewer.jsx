@@ -262,6 +262,7 @@ const WebViewer = () => {
     if (appState === "TRANSFORM") {
       controllerRef.current.applyTransformation();
       setTransformationMode(null);
+      updateModifiers();
     } else {
       // 아니면 클릭된 PCD 선택
       const isMultiSelect = event.shiftKey;
